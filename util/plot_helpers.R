@@ -10,6 +10,9 @@ THEME_MINIMAL <- theme_minimal(base_size = 30) +
   theme(
     axis.ticks.x = element_line(color = "black", size = 1),
     axis.ticks.length = unit(0.5, "cm"),
+    axis.title.x = element_text(
+      margin = margin(t = 25, l = 25)
+    ),
     panel.grid.minor = element_blank(),
     panel.grid.major.x = element_blank(),
     plot.background = element_rect(fill = "transparent", color = NA),
@@ -21,3 +24,14 @@ THEME_MINIMAL <- theme_minimal(base_size = 30) +
     legend.spacing.y = unit(0, "cm")
   )
 
+mean_ci95 <- function(x) {
+  m <- mean(x, na.rm = TRUE)
+  se <- sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+  t <- qt(0.975, df = sum(!is.na(x)) - 1)
+
+  data.frame(
+    y = m,
+    ymin = m - t * se,
+    ymax = m + t * se
+  )
+}

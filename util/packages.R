@@ -17,7 +17,8 @@ required_packages <- c(
   "effsize",
   "hms",
   "data.table",
-  "reshape2"
+  "reshape2",
+  "grid"
 )
 
 new_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
@@ -59,3 +60,4 @@ library(kableExtra)
 library(pbkrtest)
 library(effsize)
 library(hms)
+library(grid)

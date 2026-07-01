@@ -1,5 +1,3 @@
-WHO_PM25_GUIDELINE_VALUE = 5 # ug/m3
-
 SIG_LEVEL = 0.05
 
 BOXPLOT_FOLDER = "boxplot"
@@ -8,7 +6,7 @@ MEAN_PM_SD = "Mean $\\pm$ SD"
 MEDIAN_Q1_Q3 = "Median [Q1, Q3]"
 
 # ----- SENSOR ENVIRONMENTAL METRICS ------
-SENSOR_METRICS <- c("pm1", "pm25", "pm10", "co2", "temperature", "humidity")
+SENSOR_METRICS <- c("pm25", "co2", "temperature", "humidity")
 
 # ----- APPLE WATCH HEALTH METRICS ------
 HR = "heart-rate"
@@ -21,6 +19,11 @@ SLEEP = "sleep"
 HEALTH_METRICS <- c(HR, RHR, HRV, RR, SPO2)
 HEALTH_METRIC_NAMES <- setNames(
   c("HR", "RHR", "HRV", "Sleep RR", "SpO2"),
+  c(HR, RHR, HRV, RR, SPO2)
+)
+
+HEALTH_METRIC_PLOT_LABELS <- setNames(
+  c("HR", "RHR", "HRV", "'Sleep RR'", "SpO[2]"),
   c(HR, RHR, HRV, RR, SPO2)
 )
 
@@ -57,9 +60,7 @@ PERIOD_INDICES <- c(1, 2, 3)
 
 # ----- LABELS FOR LATEX CODES -----
 METRIC_LABELS_LATEX <- c(
-  pm1 = "PM1 ($\\mu$g/m$^3$)",
   pm25 = "PM2.5 ($\\mu$g/m$^3$)",
-  pm10 = "PM10 ($\\mu$g/m$^3$)",
   co2 = "CO$_2$ (ppm)",
   temperature = "T ($^\\circ$C)",
   humidity = "RH (\\%)"
@@ -79,15 +80,15 @@ SLEEP_STAGE_LABELS_LATEX <- setNames(
 )
 
 TREATMENT_LABELS <- setNames(
-                c("Sham Filter", "Real Filter", "Outdoors", "Washout"),
+                c("Placebo Filter", "Real Filter", "Outdoors", "Washout"),
                 c(TREATMENT_1_NAME, TREATMENT_2_NAME, "outdoors", "washout")
 )
 TREATMENT_LABELS_2 <- setNames(
-                c("Sham Filter (Home)", "Real Filter (Home)", "Outdoors"),
+                c("Placebo Filter (Home)", "Real Filter (Home)", "Outdoors"),
                 c(TREATMENT_1_NAME, TREATMENT_2_NAME, "outdoors")
 )
 TREATMENT_LABELS_3 <- setNames(
-                c("Sham Filter (Fan On)", "Real Filter (Fan On)", "Washout (Fan Off)"),
+                c("Placebo Filter (Fan On)", "Real Filter (Fan On)", "Washout (Fan Off)"),
                 c(TREATMENT_1_NAME, TREATMENT_2_NAME, "washout")
 )
 

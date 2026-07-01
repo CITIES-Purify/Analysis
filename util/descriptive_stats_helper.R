@@ -7,121 +7,191 @@ PARTICIPANTS_TRAVEL_DATES <- read_rds("../R-table/PARTICIPANTS_TRAVEL_DATES.rds"
 process_and_summarize_each_metric_each_participant <- function(
     data, 
     group_by_cols,
-    should_remove_travel = TRUE
+    should_remove_travel = TRUE,
+    should_remove_iqr_outlier = TRUE
     ) {
 
-    # Dynamically generate numeric columns
+    # Remove travel dates once, before looping through metrics
+    if (should_remove_travel) {
+        data <- remove_travel_dates(
+            data = data,
+            participants_travel_dates = PARTICIPANTS_TRAVEL_DATES
+        ) |> 
+        ungroup()
+    }
+
+    # Dynamically generate numeric columns, excluding grouping columns
     numeric_metrics <- data |>
-        select(where(is.numeric)) |>
+        select(where(is.numeric), -any_of(group_by_cols)) |>
         names()
 
     cleaned_list <- lapply(numeric_metrics, function(metric) {
-        # Remove travel dates
-        if (should_remove_travel){
-            data <- remove_travel_dates(
-                data = data,
-                participants_travel_dates = PARTICIPANTS_TRAVEL_DATES
-                ) |> 
-                ungroup()
+
+        data_metric <- data
+
+        # Optionally remove outliers for this metric
+        if (should_remove_iqr_outlier) {
+            data_metric <- remove_outliers_iqr_method(
+                data = data_metric,
+                value_column = metric,
+                group_by_column = group_by_cols
+            ) |> 
+            ungroup()
         }
 
-        # Remove outliers
-        data <- remove_outliers_iqr_method(
-          data = data,
-          value_column = metric,
-          group_by_column = group_by_cols
-        ) |> 
-        ungroup() |>
-        group_by(across(any_of(group_by_cols))) |>
-        summarise(
-            !!metric := mean(.data[[metric]], na.rm = TRUE),
-            .groups = "drop"
-        )
+        # Always summarise, regardless of whether outliers were removed
+        data_metric |>
+            group_by(across(any_of(group_by_cols))) |>
+            summarise(
+                !!metric := mean(.data[[metric]], na.rm = TRUE),
+                .groups = "drop"
+            )
     })
 
     Reduce(
-        function(x, y)
-        full_join(
-            x,
-            y,
-            by = group_by_cols
-        ),
+        function(x, y) {
+            full_join(
+                x,
+                y,
+                by = group_by_cols
+            )
+        },
         cleaned_list
     )
 }
 
 # Calculate pair-wise difference for each metric for each participant
 treatment_diff <- function(
-    summary_per_participant, 
-    summarise_by
-    ){
+  summary_per_participant,
+  summarise_by
+) {
 
-    cols = c("pseudonym", "type_id")
+  cols <- c("pseudonym", "type_id")
 
-  # Drop groups with only one treatment
-  df <- summary_per_participant |> 
+  treatments <- unique(summary_per_participant$treatment)
+
+  if (length(treatments) != 2) {
+    stop(
+      "Expected exactly two treatment levels, found: ",
+      paste(treatments, collapse = ", ")
+    )
+  }
+
+  treatment_a <- treatments[1]
+  treatment_b <- treatments[2]
+
+  df <- summary_per_participant |>
     group_by(across(any_of(cols)), treatment) |>
-    summarise(across(any_of(summarise_by), ~ mean(.x, na.rm = TRUE)), .groups = "drop") |>
+    summarise(
+      across(any_of(summarise_by), ~ mean(.x, na.rm = TRUE)),
+      .groups = "drop"
+    ) |>
     group_by(across(any_of(cols))) |>
     filter(n_distinct(treatment) > 1) |>
     ungroup() |>
     pivot_wider(
       names_from = treatment,
-      values_from = any_of(summarise_by)
+      values_from = any_of(summarise_by),
+      names_glue = "{.value}_{treatment}"
     ) |>
-    # Calculate differences for each type_id
     mutate(across(
-      ends_with(TREATMENT_2_NAME), 
-      ~ . - get(str_replace(cur_column(), TREATMENT_2_NAME, TREATMENT_1_NAME)),
-      .names = "{str_remove(.col, paste0('_', TREATMENT_2_NAME))}_diff"
+      ends_with(paste0("_", treatment_b)),
+      ~ .x - get(str_replace(
+        cur_column(),
+        paste0("_", treatment_b, "$"),
+        paste0("_", treatment_a)
+      )),
+      .names = "{.col}_diff"
     )) |>
+    rename_with(
+      ~ str_replace(.x, paste0("_", treatment_b, "_diff$"), "_diff"),
+      ends_with(paste0("_", treatment_b, "_diff"))
+    ) |>
     select(
-      any_of(cols), 
-      ends_with(TREATMENT_1_NAME), 
-      ends_with(TREATMENT_2_NAME),
-      ends_with("_diff"),
-      )
+      any_of(cols),
+      ends_with(paste0("_", treatment_a)),
+      ends_with(paste0("_", treatment_b)),
+      ends_with("_diff")
+    )
 
   return(df)
 }
 
 # Shapiro-Wilk test
-calc_shapiro_wilk <- function(treatment_diff){
+calc_shapiro_wilk <- function(treatment_diff) {
   results <- list()
   i <- 1
 
-  # Loop through each type_id
   for (type in unique(treatment_diff$type_id)) {
-    # Filter data for the current type
-    df <- treatment_diff %>% filter(type_id == type)
-    
-    # Skip if no data for the type
+
+    df <- treatment_diff |>
+      filter(type_id == type)
+
     if (nrow(df) == 0) next
-    
-    # Loop through each metric difference column
+
     for (metric in names(df)[grepl("_diff$", names(df))]) {
-      # Extract differences for the current metric
+
       differences <- df[[metric]]
       non_na_values <- differences[!is.na(differences)]
-      
-      # Skip if fewer than 3 non-NA values
-      if (length(non_na_values) < 3) next
-      
-      # Perform Shapiro-Wilk test on differences
+
+      n_non_na <- length(non_na_values)
+      n_unique <- length(unique(non_na_values))
+
+      # Shapiro-Wilk requires at least 3 non-NA values
+      if (n_non_na < 3) {
+        results[[i]] <- data.frame(
+          type_id = type,
+          metric = metric,
+          W = NA_real_,
+          p_value = NA_real_,
+          normality = "",
+          note = "fewer than 3 non-NA differences",
+          stringsAsFactors = FALSE
+        )
+        i <- i + 1
+        next
+      }
+
+      # Shapiro-Wilk fails when all values are identical
+      if (n_unique < 2) {
+        results[[i]] <- data.frame(
+          type_id = type,
+          metric = metric,
+          W = NA_real_,
+          p_value = NA_real_,
+          normality = "",
+          note = "all differences identical",
+          stringsAsFactors = FALSE
+        )
+        i <- i + 1
+        next
+      }
+
       test_result <- shapiro.test(non_na_values)
-      
-      # Store results in the results dataframe
+
       results[[i]] <- data.frame(
         type_id = type,
         metric = metric,
         W = as.numeric(test_result$statistic),
         p_value = test_result$p.value,
         normality = ifelse(test_result$p.value > SIG_LEVEL, "v", ""),
+        note = "",
         stringsAsFactors = FALSE
       )
 
       i <- i + 1
     }
+  }
+
+  if (length(results) == 0) {
+    return(data.frame(
+      type_id = character(),
+      metric = character(),
+      W = numeric(),
+      p_value = numeric(),
+      normality = character(),
+      note = character()
+    ))
   }
 
   df <- do.call(rbind, results)
@@ -141,43 +211,92 @@ calc_paired_stat_tests_from_diff <- function(
   results <- list()
   i <- 1
 
-  # Detect if metric column exists in both key dataframes
   has_metric_col <- "metric" %in% names(shapiro_diff_results)
 
   # --- PHASE 1: Run Statistical Tests & Collect Raw P-values ---
-  # Loop through each type_id
   for (type in unique(treatment_diff$type_id)) {
 
     df <- treatment_diff |>
       filter(type_id == type)
 
-    # Skip if no data for the type
     if (nrow(df) == 0) next
 
-    # Loop through each current_metric difference column
     for (current_metric_diff in names(df)[grepl("_diff$", names(df))]) {
+
       differences <- df[[current_metric_diff]]
       non_na_values <- differences[!is.na(differences)]
 
       # Need at least 3 paired observations
       if (length(non_na_values) < 3) next
 
-      # -- Look up normality of differences ---
-      # If metric col exists, filter by it. If not, don't add extra constraints.
-      shapiro_sub <- shapiro_diff_results |> filter(type_id == type)
+      # Look up normality of differences
+      shapiro_sub <- shapiro_diff_results |>
+        filter(type_id == type)
+
       if (has_metric_col) {
-        shapiro_sub <- shapiro_sub |> filter(metric == current_metric_diff)
+        shapiro_sub <- shapiro_sub |>
+          filter(metric == current_metric_diff)
       }
-      normality_val <- shapiro_sub |> pull(normality)
 
-      is_normal <- length(normality_val) == 1 && normality_val == "v"
+      normality_val <- shapiro_sub |>
+        pull(normality)
 
-      test_result <- if (is_normal) {
-        # one-sample t-test on differences
-        t.test(non_na_values, mu = 0)
-      } else {
-        # Wilcoxon signed-rank test on differences
-        wilcox.test(non_na_values, mu = 0)
+      # Important: use isTRUE() so NA does not break if()
+      is_normal <- length(normality_val) == 1 && isTRUE(normality_val == "v")
+
+      n_unique <- length(unique(non_na_values))
+
+      # Case 1: all differences are zero
+      if (n_unique == 1 && unique(non_na_values) == 0) {
+
+        results[[i]] <- data.frame(
+          type_id = type,
+          type_label = type_labels[type],
+          metric_diff_col = current_metric_diff,
+          metric = sub("_diff$", "", current_metric_diff),
+          is_normal = FALSE,
+          test = "constant zero difference",
+          statistic = 0,
+          p_value = 1,
+          stringsAsFactors = FALSE
+        )
+
+        i <- i + 1
+        next
+      }
+
+      # Case 2: run paired-difference test safely
+      test_result <- tryCatch(
+        {
+          if (is_normal && n_unique > 1) {
+            t.test(non_na_values, mu = 0)
+          } else {
+            wilcox.test(
+              non_na_values,
+              mu = 0,
+              exact = FALSE,
+              correct = FALSE
+            )
+          }
+        },
+        error = function(e) NULL
+      )
+
+      if (is.null(test_result)) {
+        results[[i]] <- data.frame(
+          type_id = type,
+          type_label = type_labels[type],
+          metric_diff_col = current_metric_diff,
+          metric = sub("_diff$", "", current_metric_diff),
+          is_normal = is_normal,
+          test = "test failed",
+          statistic = NA_real_,
+          p_value = NA_real_,
+          stringsAsFactors = FALSE
+        )
+
+        i <- i + 1
+        next
       }
 
       results[[i]] <- data.frame(
@@ -203,55 +322,74 @@ calc_paired_stat_tests_from_diff <- function(
   # --- PHASE 2: Adjust P-values ---
   df_out <- do.call(rbind, results)
   rownames(df_out) <- NULL
+
   df_out$p_adjusted <- p.adjust(df_out$p_value, method = "BH")
 
-  # --- PHASE 3: Calculate Effect Size based on Adjusted P ---
-  # Initialize columns
+  # --- PHASE 3: Calculate Effect Size only for significant, valid adjusted p-values ---
   df_out$effect_size <- NA_real_
   df_out$effect_size_type <- NA_character_
 
   for (k in 1:nrow(df_out)) {
-      # Check significance against ADJUSTED p-value
-      if (df_out$p_adjusted[k] < SIG_LEVEL) {
-          
-          # Retrieve metadata
-          curr_type <- df_out$type_id[k]
-          curr_diff_col <- df_out$metric_diff_col[k]
-          curr_normal <- df_out$is_normal[k]
-          
-          # Reconstruct raw column names
-          base_metric <- str_remove(curr_diff_col, "_diff$")
-          col_t1 <- paste0(base_metric, "_", TREATMENT_1_NAME)
-          col_t2 <- paste0(base_metric, "_", TREATMENT_2_NAME)
-          
-          # Retrieve raw vectors from original dataframe
-          # (We filter treatment_diff again to get the raw T1/T2 values)
-          df_raw <- treatment_diff |> filter(type_id == curr_type)
 
-          vec_t1 <- df_raw[[col_t1]]
-          vec_t2 <- df_raw[[col_t2]]
+    # Critical fix: skip NA adjusted p-values
+    if (is.na(df_out$p_adjusted[k])) next
 
-          # Valid pairs
-          valid_pairs <- !is.na(vec_t1) & !is.na(vec_t2)
-          v1 <- vec_t1[valid_pairs]
-          v2 <- vec_t2[valid_pairs]
-       
-          if (curr_normal) {
-              # Cohen's d (Paired)
-              es <- cohen.d(v1, v2, paired = TRUE)
-              df_out$effect_size[k] <- es$estimate
-              df_out$effect_size_type[k] <- "Cohen's d"
-          } else {
-              # Cliff's Delta
-              es <- cliff.delta(v1, v2)
-              df_out$effect_size[k] <- es$estimate
-              df_out$effect_size_type[k] <- "Cliff's delta"
-          }
+    if (df_out$p_adjusted[k] < SIG_LEVEL) {
+
+      curr_type <- df_out$type_id[k]
+      curr_diff_col <- df_out$metric_diff_col[k]
+      curr_normal <- df_out$is_normal[k]
+
+      base_metric <- str_remove(curr_diff_col, "_diff$")
+
+      candidate_cols <- names(treatment_diff)[
+        str_starts(names(treatment_diff), paste0(base_metric, "_")) &
+          !str_ends(names(treatment_diff), "_diff")
+      ]
+
+      if (length(candidate_cols) != 2) {
+        warning(
+          "Expected exactly 2 treatment columns for metric ",
+          base_metric,
+          ", found: ",
+          paste(candidate_cols, collapse = ", ")
+        )
+        next
       }
+
+      col_t1 <- candidate_cols[1]
+      col_t2 <- candidate_cols[2]
+
+      df_raw <- treatment_diff |>
+        filter(type_id == curr_type)
+
+      vec_t1 <- df_raw[[col_t1]]
+      vec_t2 <- df_raw[[col_t2]]
+
+      valid_pairs <- !is.na(vec_t1) & !is.na(vec_t2)
+      v1 <- vec_t1[valid_pairs]
+      v2 <- vec_t2[valid_pairs]
+
+      # Skip effect size if there are too few valid pairs
+      if (length(v1) < 3 || length(v2) < 3) next
+
+      # Skip effect size if both vectors are identical
+      if (all(v1 == v2, na.rm = TRUE)) next
+
+      if (isTRUE(curr_normal)) {
+        es <- cohen.d(v1, v2, paired = TRUE)
+        df_out$effect_size[k] <- es$estimate
+        df_out$effect_size_type[k] <- "Cohen's d"
+      } else {
+        es <- cliff.delta(v1, v2)
+        df_out$effect_size[k] <- es$estimate
+        df_out$effect_size_type[k] <- "Cliff's delta"
+      }
+    }
   }
 
-  # Clean up helper columns used for calculation
-  df_out <- df_out |> select(-type_id, -metric_diff_col, -is_normal)
+  df_out <- df_out |>
+    select(-type_id, -metric_diff_col, -is_normal)
 
   df_out
 }

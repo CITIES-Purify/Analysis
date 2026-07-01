@@ -1,4 +1,4 @@
-process_data_file <- function(file_path, ALL_PARTICIPANTS_METADATA) {
+process_data_file <- function(file_path, ALL_PARTICIPANTS_METADATA, only_during_intervention = TRUE) {
     # Extract filename and convert to lowercase for matching
     file_name <- tolower(basename(file_path))
 
@@ -23,7 +23,8 @@ process_data_file <- function(file_path, ALL_PARTICIPANTS_METADATA) {
 
     return(
         add_treatment_to_df(
-            data = data
+            data = data,
+            only_during_intervention = only_during_intervention
         )
     )
 }

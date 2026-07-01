@@ -3,7 +3,7 @@
 ## Study
 
 ```
-Assessing the Health Impact of Indoor Air Purification Using Health Data Obtained From Apple Watch Wearers
+Exploratory Assessment of Changes in Smartwatch Health Metrics to Indoor Air Purification:
 ```
 
 #### Institutional Review Board Approval

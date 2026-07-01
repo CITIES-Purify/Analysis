@@ -1,22 +1,27 @@
 fit_lme_models <- function(main_fixed_effect, optional_filter_by_location_type = NULL, metric_dfs) {
   imap(metric_dfs, function(df, metric_name) {
-    df_filtered <- df |> mutate(
-      period_id = as.factor(period_id)
-    )
-
     # Early return for RHR and RR outside of home location
     if (!is.null(optional_filter_by_location_type) && optional_filter_by_location_type != "home" && (metric_name == RHR || metric_name == RR)){
       return(NULL)
     }
 
-    # Early return for RHR if main_fixed_effect is treatment (only focus on home location, but one RHR measurement spans all locations)
-    if (metric_name == RHR && main_fixed_effect == "treatment"){
+    # Early return for RHR if optional_filter_by_location_type == "home" (RHR measurement spans all locations)
+    if (
+      !is.null(optional_filter_by_location_type) &&
+      metric_name == RHR &&
+      optional_filter_by_location_type == "home"
+    ) {
+      return(NULL)
+    }
+
+    if (!main_fixed_effect %in% names(df)) {
+      warning(paste("Skipping", metric_name, "- missing", main_fixed_effect))
       return(NULL)
     }
 
     # ---- FIXED EFFECTS ----
     # Use natural cubic splines with 3 degrees of freedom for temperature, humidity, and co2
-    fixed_effects <- c(main_fixed_effect, "bmi", "biological_sex", "ns(temperature, df = 3)", "ns(humidity, df = 3)", "ns(co2, df = 3)", "dow", "heart_rate_motion_context")
+    fixed_effects <- c(main_fixed_effect, "treatment_order", "first_or_second_half", "bmi", "biological_sex", "ns(temperature, df = 3)", "ns(humidity, df = 3)", "ns(co2, df = 3)", "dow", "heart_rate_motion_context")
     random_effects <- c("pseudonym", "date")
 
     # For metrics other than RHR and sleep stages
@@ -25,7 +30,7 @@ fit_lme_models <- function(main_fixed_effect, optional_filter_by_location_type =
 
       # Filter by optional_filter_by_location_type if presented (for LME model 1 and LME model 2 sensivity model)
       if (!is.null(optional_filter_by_location_type)) {
-        df_filtered <- df_filtered |> filter(location_type == optional_filter_by_location_type)
+        df <- df |> filter(location_type == optional_filter_by_location_type)
       } 
       # Else, if no optional_filter_by_location_type is applied
       else{
@@ -38,7 +43,7 @@ fit_lme_models <- function(main_fixed_effect, optional_filter_by_location_type =
 
     # Scale barometric_pressure if SPO2 by z-score (mean = 0, SD = 1) --> Help convergence 
     if (metric_name == SPO2){
-      df_filtered$barometric_pressure <- scale(df_filtered$barometric_pressure, center = TRUE, scale = TRUE)
+      df$barometric_pressure <- scale(df$barometric_pressure, center = TRUE, scale = TRUE)
       fixed_effects <- c(fixed_effects, "ns(barometric_pressure, df = 3)")
     }
 
@@ -50,27 +55,27 @@ fit_lme_models <- function(main_fixed_effect, optional_filter_by_location_type =
     print(paste("Fitting model for metric:", metric_name))
 
     # Calculate IQR of the main_fixed_effect if it's a continuous variable to aid with interpretation
-    if (!is.factor(df_filtered[[main_fixed_effect]])) {
-      main_fixed_effect_iqr <- IQR(df_filtered[[main_fixed_effect]], na.rm = TRUE)
+    if (!is.factor(df[[main_fixed_effect]])) {
+      main_fixed_effect_iqr <- IQR(df[[main_fixed_effect]], na.rm = TRUE)
     } else {
       main_fixed_effect_iqr <- NA_real_
     }
 
     # Scale PM2.5 exposure by IQR to median --> Help convergence and aid with interpretation
-    pm25_iqr <- IQR(df_filtered$pm25, na.rm = TRUE)
-    pm25_med <- median(df_filtered$pm25, na.rm = TRUE)
-    df_filtered$pm25 <- (df_filtered$pm25 - pm25_med) / pm25_iqr
+    pm25_iqr <- IQR(df$pm25, na.rm = TRUE)
+    pm25_med <- median(df$pm25, na.rm = TRUE)
+    df$pm25 <- (df$pm25 - pm25_med) / pm25_iqr
 
     # Scale all other continuous variables by z-score (mean = 0, SD = 1) --> Help convergence 
-    df_filtered$bmi <- scale(df_filtered$bmi, center = TRUE, scale = TRUE)
-    df_filtered$temperature <- scale(df_filtered$temperature, center = TRUE, scale = TRUE)
-    df_filtered$humidity <- scale(df_filtered$humidity, center = TRUE, scale = TRUE)
-    df_filtered$co2 <- scale(df_filtered$co2, center = TRUE, scale = TRUE)
-    df_filtered$heart_rate_motion_context <- scale(df_filtered$heart_rate_motion_context, center = TRUE, scale = TRUE)
+    df$bmi <- scale(df$bmi, center = TRUE, scale = TRUE)
+    df$temperature <- scale(df$temperature, center = TRUE, scale = TRUE)
+    df$humidity <- scale(df$humidity, center = TRUE, scale = TRUE)
+    df$co2 <- scale(df$co2, center = TRUE, scale = TRUE)
+    df$heart_rate_motion_context <- scale(df$heart_rate_motion_context, center = TRUE, scale = TRUE)
 
-    model <- lmer(formula = formula, data = df_filtered)
+    model <- lmer(formula = formula, data = df)
 
-    return(list(model = model, main_fixed_effect_iqr = main_fixed_effect_iqr, df_used = df_filtered))
+    return(list(model = model, main_fixed_effect_iqr = main_fixed_effect_iqr, df_used = df))
   }) |> compact()
 }
 
@@ -236,13 +241,24 @@ plot_fixed_effect_percentage <- function(main_fixed_effect, summaries, health_me
     # Significance logic
     effects <- effects |>
       mutate(
-        stars = case_when(p.value < 0.001 ~ "***", p.value < 0.01  ~ "**", p.value < 0.05  ~ "*", TRUE ~ ""),
-        sig = case_when(p.value < 0.001 ~ "< 0.001", TRUE ~ paste0("= ", sprintf("%.3f", p.value))),
+        stars = case_when(
+          p.value < 0.001 ~ "***",
+          p.value < 0.01  ~ "**",
+          p.value < 0.05  ~ "*",
+          TRUE ~ ""
+        ),
+        sig = case_when(
+          p.value < 0.001 ~ "< 0.001",
+          TRUE ~ paste0("= ", sprintf("%.3f", p.value))
+        ),
         p_string = paste0("p ", sig, stars),
-        metric_label = paste0(health_metric_names[metric_name], " (", p_string, ")")
-      ) |>
-      arrange(desc(metric_label)) |>
-      mutate(metric_label = factor(metric_label, levels = unique(metric_label)))
+        metric_label = paste0(
+          health_metric_names[metric_name],
+          "~' (", p_string, ")'"
+        ),
+        metric_name = factor(metric_name, levels = rev(HEALTH_METRICS)),
+        metric_label = factor(metric_label, levels = metric_label[order(metric_name)])
+      )
 
     # Theme colors
     point_color <- if (is_black_bg) "white" else "black"
@@ -290,6 +306,7 @@ plot_fixed_effect_percentage <- function(main_fixed_effect, summaries, health_me
                 labels = function(x) ifelse(x %in% major_breaks, as.character(x), ""),
                 limits = c(limit_low, limit_high) # Force the axis to show the full range
             ) +
+        scale_x_discrete(labels = function(x) parse(text = as.character(x))) +
         theme_minimal(base_size = 30) +
         theme(
             panel.grid.major = element_blank(),
@@ -298,11 +315,14 @@ plot_fixed_effect_percentage <- function(main_fixed_effect, summaries, health_me
             # Match tick color to the grid line color
             axis.ticks.x = element_line(color = grid_color, size = 0.5), 
             axis.ticks.length.x = unit(0.5, "cm"),
-            axis.text.x = element_text(angle = 0, hjust = 0.5, color = text_color),
-
-            plot.background = element_rect(fill = bg_fill, color = NA),
             axis.text = element_text(color = text_color),
-            axis.title = element_text(color = text_color)
+            axis.text.x = element_text(angle = 0, hjust = 0.5, color = text_color),
+            plot.background = element_rect(fill = bg_fill, color = NA),
+            axis.title = element_text(color = text_color),
+            axis.title.x.bottom = element_text(
+                color = text_color,
+                margin = margin(t = 16)
+            )
         )
 
     # Save logic
@@ -407,6 +427,7 @@ make_reporting_treatment_df <- function(lme_summaries,
     
     data.frame(
       metric = metric_labels[metric],
+      nobs = sumry$general_info$nobs,
       emmean1_pm_se = em1_str,
       emmean2_pm_se = em2_str,
       pct_change_iqr = pct_str,
@@ -464,6 +485,7 @@ make_reporting_pm25_df <- function(lme_summaries, pm25_term = "pm25", flip_direc
 
     data.frame(
       metric = metric_labels[metric],
+      nobs = sumry$general_info$nobs,
       main_fixed_effect_iqr = round(sumry$main_fixed_effect_iqr, 1),
       pct_change_iqr = pct_str,
       p_value = p_value_str,
